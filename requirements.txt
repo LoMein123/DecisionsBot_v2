@@ -1,0 +1,11 @@
+py-cord==2.4.0
+fuzzywuzzy==0.18.0
+gspread==6.1.2
+matplotlib==3.8.1
+pandas==2.2.2
+pyspellchecker==0.8.1
+python-dotenv==1.0.1
+scipy==1.13.1
+spellchecker==0.4
+torch==2.1.2+cu121
+transformers==4.41.1

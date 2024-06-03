@@ -1,213 +1,261 @@
 import discord
-import gspread
-from spreadsheet import pull_channel
-from dotenv import load_dotenv
+
 import os
-import interactions
-from discord_slash import SlashCommand
-from discord_slash.utils.manage_commands import create_option, create_choice
-from embed import create_embed, add_field
+from dotenv import load_dotenv
+import random
 
-load_dotenv()
+from programClassifier import classify_program
+from schoolClassifier import classify_school
+from util import generate_tags
 
-# Intents
-intents = discord.Intents().default()
-intents.members = True
-intents.reactions = True
+from embed import decision_verification, deletion_verification, decision_post, admission_statistics_post
+from spreadsheet import get_applicant_years, get_sheet_and_row_by_message_id, add_to_spreadsheet, stats, delete_row_by_row_num, delete_decision_private
 
-# Bot Instance
-client = discord.Client(intents=intents)
-slash = SlashCommand(client, sync_commands=True)
+PROGRAM_CONFIDENCE_THRESHOLD = 10     # If program classification confidence is below this value, will not use classified value
+SCHOOL_SIMILARITY_THRESHOLD = 55      # If school fuzzy match similarity is below this value, will not use matched value
 
-# Service Account
-service_account = gspread.service_account(f"{os.getcwd()}/service_account.json")
+"""
+Load environment variables
+"""
+load_dotenv()  
+bot = discord.Bot()
+applicant_years = get_applicant_years()
 
 
-@client.event
+"""
+Create bot instance
+"""
+@bot.event
 async def on_ready():
-    print(f"Logged in as {client.user}")
-    # await pull_channel(client, 846891548171173928)
+    print(f"{bot.user} is ready and online!")
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="for /decisions"))
 
 
-@slash.slash(
-    name="decision",
-    description="Record a decision.",
-    guild_ids=[int(os.environ.get("GUILD"))],
-    options=[
-        create_option(
-            name="school",
-            description="The school that a decision was made for.",
-            option_type=3,
-            required=True,
-        ),
-        create_option(
-            name="program",
-            description="The program you applied to.",
-            option_type=3,
-            required=True,
-        ),
-        create_option(
-            name="status",
-            description="Decision Type",
-            option_type=3,
-            required=True,
-            choices=[
-                create_choice(name="Accepted", value="Accepted"),
-                create_choice(name="Rejected", value="Rejected"),
-                create_choice(name="Waitlisted", value="Waitlisted"),
-                create_choice(name="Deferred", value="Deferred"),
-            ],
-        ),
-        create_option(
-            name="average",
-            description="Your top 6 average",
-            option_type=3,
-            required=True,
-        ),
-        create_option(
-            name="date",
-            description="The date you were given a decision.",
-            option_type=3,
-            required=True,
-        ),
-        create_option(
-            name="type",
-            description="Applicant Type",
-            option_type=3,
-            required=True,
-            choices=[
-                create_choice(name="101 (Ontario)", value="101"),
-                create_choice(name="105 (International)", value="105F"),
-                create_choice(name="105 (Domestic -> Not Ontario)", value="105D"),
-            ],
-        ),
-        create_option(
-            name="other",
-            description="Other information you want to provide",
-            option_type=3,
-            required=False,
-        ),
-    ],
-)
-async def _decision(ctx, school, program, status, average, date, type, other=None):
+"""
+Displays the bot's ping
+"""
+@bot.command(name="ping", description="Ping!")
+async def ping(ctx):
+    bot_latency = round(bot.latency*100)
+    await ctx.respond(f"Pong!    ({bot_latency} ms)")
 
-    colour = "magenta"
-    if status == "Accepted":
-        colour = "light_green"
-    elif status == "Waitlisted":
-        colour = "orange"
-    elif status == "Deferred":
-        colour = "yellow"
-    elif status == "Rejected":
-        colour = "red"
 
-    embed = create_embed("Decision Verification Required", "", colour)
-    add_field(embed, "User", ctx.author.mention, True)
-    add_field(embed, "User ID", ctx.author.id, True)
-    add_field(embed, "School", school, True)
-    add_field(embed, "Program", program, True)
-    add_field(embed, "Status", status, True)
-    add_field(embed, "Average", average, True)
-    add_field(embed, "Decision Made On", date, True)
-    add_field(embed, "101/105", type, True)
-    if other:
-        add_field(embed, "Other", other, True)
+"""
+Adds a decision to the spreadsheet after moderators approve
+Takes School, Program, Status, Average, Date, Applicant type, Comments/Other as parameters
+"""
+@bot.command(name="decision", description="Record a university's decision to the spreadsheet.")
+async def decision(
+    ctx,
+    school: discord.Option(str, description="The school you received a decision for."),                                                     # type: ignore
+    program: discord.Option(str, description="The program you received a decision for."),                                                   # type: ignore
+    status: discord.Option(str, description="The decision that was made.", choices=["Accepted", "Rejected", "Waitlisted", "Deferred"] ),    # type: ignore
+    average: discord.Option(str, description="Your current top 6 average."),                                                                # type: ignore
+    date: discord.Option(str, description="The date the decision was made."),                                                               # type: ignore
+    applicant_type: discord.Option(str, description="Type of applicant.", choices=["101", "105D", "105F"] ),                                # type: ignore
+    anonymous: discord.Option(bool, description="Select True appear anonymous on our records.", choices=[True, False], default=False),      # type: ignore
+    other: discord.Option(str, required=False, default=None)                                                                                # type: ignore                 
+):
+    # Stop Timeouts
+    await ctx.defer()
+
+    # Create embed
+    decision_verification_embed = await decision_verification(ctx, school, program, status, average, date, applicant_type, anonymous, other)
+
+    # Send verification embed to #mod-queue channel with buttons
+    mod_queue = bot.get_channel(int(os.environ.get("MOD_QUEUE")))
+    await mod_queue.send(embed=decision_verification_embed, view=DecisionVerificationButtons())
+
+    await ctx.respond("Information sent to moderators for review.  Check the decisions channel for updates.", ephemeral=True)
+
+"""
+Buttons that go under the decision verification embed for moderators
+Approve allows the message to be sent to the decisions channel, Delete rejects the decision (troll/mistake)
+"""
+class DecisionVerificationButtons(discord.ui.View):
+
+    ''' Approve Button - send decision to decisions channel to display if pressed '''
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
+    async def button_callback(self, button, interaction):
+        await interaction.response.defer()      # Stop button click errors
+
+        embed_fields = interaction.message.embeds[0].fields
+        
+        user_name, user_id, school, program, status, average, date, applicant_type = [embed_fields[i].value for i in range(8)]
+        user = await bot.fetch_user(user_id)
+
+        anonymous = True if "(Anonymous)" in user_name else False
+
+        # Check if other is empty
+        try:
+            other = embed_fields[8].value
+        except IndexError:
+            other = None
+
+        decision_display_embed = await decision_post(user, school, program, status, average, date, applicant_type, anonymous, other)
+
+        # Send the decision display embed to the decisions channel
+        decisions_log = bot.get_channel(int(os.environ.get("DECISIONS_LOG")))
+
+        if not anonymous:
+            message = await decisions_log.send(user.mention, embed=decision_display_embed)
+        else:
+            message = await decisions_log.send(embed=decision_display_embed)
+
+        # React with random emoji to embed if accepted
+        if status == "Accepted":
+            await message.add_reaction(random.choice(["🤩", "🥳", "🎉", "🎊", "✨", "💯", "‼", "🔥"]))
+        
+        # Classify university and program if they meet the threshold
+        classified_school = classify_school(school)[0] if classify_school(school)[1] > SCHOOL_SIMILARITY_THRESHOLD else school.lower()
+        classified_program = classify_program(program)[0] if classify_program(program)[1] > PROGRAM_CONFIDENCE_THRESHOLD else program.lower()
+
+        tags = generate_tags(classified_school, classified_program)
+
+        # Add to spreadsheet
+        await add_to_spreadsheet(user, school, program, status, average, date, applicant_type, anonymous, other, tags, message.id)
+
+        # Delete the verification message
+        try:
+            await interaction.message.delete()
+        except discord.errors.NotFound:
+            pass
+
+    ''' Reject button - delete decision if pressed '''
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.red)
+    async def second_button_callback(self, button, interaction):
+        await interaction.message.delete()
+        
+
+"""
+Delete a decision from spreadsheet and decisions channel
+Takes applicant year and message id as parameter
+If anonymous, does not delete
+"""
+@bot.command(name="delete", description="Request deletion for one of your decisions from the spreadsheet and channel.")
+async def delete(
+    ctx,
+    message_id: discord.Option(str, description="Message ID of your decision. Must not be anonymous.")                                  # type: ignore
+):
+    # Find decision in decisions channel/check if anonymous
+    try:
+        decisions_log = bot.get_channel(int(os.environ.get("DECISIONS_LOG")))
+        decision_embed_message = await decisions_log.fetch_message(message_id)
+
+        if decision_embed_message.mentions[0].id != ctx.author.id:
+            await ctx.respond("You cannot delete someone else's decision.", ephemeral=True)
+            return
+        
+    except discord.errors.NotFound: 
+        await ctx.respond("Decision not found.", ephemeral=True)
+        return
+    except IndexError:
+        await ctx.respond("You cannot delete an anonymous decision.", ephemeral=True)
+        return
+
+    embed_fields = decision_embed_message.embeds[0].fields
+
+    user = ctx.author
+    school_program = decision_embed_message.embeds[0].title
+    school = school_program.split(" - ",1)[0]
+    program = school_program.split(" - ",1)[1]
+    status = embed_fields[0].value
+    average = embed_fields[1].value
+    applicant_year, row = get_sheet_and_row_by_message_id(message_id)
+
+    if row is None:
+        await ctx.respond("Decision not found.", ephemeral=True)
+        return
+
+    # Create embed
+    deletion_verification_embed = await deletion_verification(user, school, program, status, average, applicant_year, row, message_id)
+
+    # Send verification embed to #mod-queue channel with buttons
+    mod_queue = bot.get_channel(int(os.environ.get("MOD_QUEUE")))
+    await mod_queue.send(embed=deletion_verification_embed, view=DeletionVerificationButtons())
+
+    await ctx.respond("Request sent to moderators for review.  You will receive a direct message upon deletion.", ephemeral=True)
+
+"""
+Buttons that go under the deletion verification embed for moderators
+Approve deletes the decision from the spreadsheet and the corresponding message in the decisions channel, Delete rejects the request (mistake)
+"""
+class DeletionVerificationButtons(discord.ui.View):
+
+    ''' Approve Button - delete decision in spreadsheet and decisions channel if pressed '''
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
+    async def button_callback(self, button, interaction):
+        await interaction.response.defer()      # Stop button click errors
+
+        embed_fields = interaction.message.embeds[0].fields
+        
+        user_id = embed_fields[1].value
+        user = await bot.fetch_user(user_id)
+        applicant_year = embed_fields[6].value
+        row = embed_fields[7].value
+        message_id = embed_fields[8].value
+
+        # Delete entry from public spreadsheet
+        await delete_row_by_row_num(applicant_year, row)
+
+        # Update entry on private spreadsheet
+        await delete_decision_private(message_id)
+
+        # Delete the decision display embed message
+        decisions_log = bot.get_channel(int(os.environ.get("DECISIONS_LOG")))
+        decision_embed_message = await decisions_log.fetch_message(message_id)
+        await decision_embed_message.delete()
+        await interaction.message.delete()
+
+        # DM User
+        await user.send(f"**{bot.get_guild(int(os.environ.get('SERVER_ID'))).name}**: Decision deleted (Year: {applicant_year}, Decision ID: {message_id}).")
+
+
+    ''' Reject button - delete request if pressed '''
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.red)
+    async def second_button_callback(self, button, interaction):
+        await interaction.message.delete()
+
+
+"""
+Query statistics from the spreadsheet
+Takes School, Program, Applicant Type, Admission year as parameters
+"""
+@bot.command(name="statistics", description="See admission statistics for a program (101 only).")
+async def statistics(
+    ctx,
+    school: discord.Option(str, description="The school that you want to see admission statistics for."),                               # type: ignore
+    program: discord.Option(str, description="The program you want to see admission statistics for."),                                  # type: ignore
+    applicant_year: discord.Option(str, description="Applicant Year", choices=applicant_years+["ALL"]),                                 # type: ignore
+):
+    # Stop timeouts
+    await ctx.defer()
+
+    # Classify university and program if they meet the threshold
+    classified_school = classify_school(school)[0] if classify_school(school)[1] > SCHOOL_SIMILARITY_THRESHOLD else school.lower()
+    classified_program = classify_program(program)[0] if classify_program(program)[1] > PROGRAM_CONFIDENCE_THRESHOLD else program.lower()
+    label_found = True if classify_program(program)[1] > PROGRAM_CONFIDENCE_THRESHOLD and classify_school(school)[1] > SCHOOL_SIMILARITY_THRESHOLD else False
+
+    tags = generate_tags(classified_school, classified_program)
+
+    # Get stats data
+    stat_info = await stats(school, program, applicant_year, tags)
+
+    # Check if no data
+    if stat_info is None:
+        await ctx.respond(f"No data found. Searched for {tags}.")
+        return
+
+    # Create embed
+    statistics_embed = admission_statistics_post(school, program, applicant_year, stat_info, label_found, tags)
+    histogram = discord.File(stat_info["filename"])
+
+    # Do not show graph if sample size is less than 1
+    if stat_info["sample size"] > 1:
+        await ctx.respond(embed=statistics_embed, file=histogram)
     else:
-        add_field(embed, "Other", "None", True)
-
-    mod_queue = client.get_channel(int(os.environ.get("MOD_QUEUE")))
-    message = await mod_queue.send(embed=embed)
-
-    for emoji in ["✅", "❌"]:
-        await message.add_reaction(emoji)
-
-    await ctx.send("Information send to moderators for review.")
+        await ctx.respond(embed=statistics_embed)
 
 
-@client.event
-async def on_raw_reaction_add(ctx):
-    if ctx.member.bot:
-        return
-
-    message = await client.get_channel(ctx.channel_id).fetch_message(ctx.message_id)
-
-    if int(os.environ.get("MOD_QUEUE")) != int(ctx.channel_id):
-        return
-
-    message_embeds = message.embeds[0]
-
-    if message_embeds.title != "Decision Verification Required":
-        return
-
-    other = None
-
-    if ctx.emoji.name == "❌":
-        await message.delete()
-        return
-    elif ctx.emoji.name == "✅":
-        embeds = message_embeds.fields
-        user_id = embeds[1].value
-        school = embeds[2].value
-        program = embeds[3].value
-        status = embeds[4].value
-        average = embeds[5].value
-        date_of_decision = embeds[6].value
-        app_type = embeds[7].value
-        other = embeds[8].value
-
-    if other == "None":
-        other = None
-
-    user = client.get_user(int(user_id))
-
-    program_school = f"{school} - {program}"
-
-    colour = "orange"
-    if status == "Accepted":
-        colour = "light_green"
-    elif status == "Waitlisted":
-        colour = "orange"
-    elif status == "Deferred":
-        colour = "yellow"
-    elif status == "Rejected":
-        colour = "red"
-
-    embed = create_embed(
-        f"{program_school}", f"{user.name}#{user.discriminator}", colour
-    )
-    add_field(embed, "Status", status, True)
-    add_field(embed, "Average", average, True)
-    add_field(embed, "Decision Made On", date_of_decision, True)
-    add_field(embed, "Applicant Type", app_type, True)
-    if other is not None:
-        add_field(embed, "Other", other, True)
-    embed.set_thumbnail(url=user.avatar_url)
-
-    channel = client.get_channel(int(os.environ.get("DECISIONS_CHANNEL")))
-    sheet = service_account.open_by_key(os.environ.get("SHEETS_KEY")).worksheet(
-        "Decisions"
-    )
-
-    await channel.send(f"{user.mention}", embed=embed)
-
-    user_str = f"{user.name}#{user.discriminator}"
-
-    # Adding to worksheet
-    wsheet_list = [
-        status,
-        school,
-        program,
-        average,
-        date_of_decision,
-        app_type,
-        user_str,
-    ]
-    if other is not None:
-        wsheet_list.append(other)
-
-    sheet.append_row(wsheet_list)
-
-    await message.delete()
-
-
-client.run(os.environ.get("BOT_TOKEN"))
+"""Run Bot"""
+bot.run(os.getenv('TOKEN'))
