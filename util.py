@@ -1,7 +1,16 @@
-"""
-Function that generates tags as a list based on the schools and programs given
-"""
 def generate_tags(school, program):
+    """
+    Function that generates tags as a list based on the schools and programs given
+
+    Parameters
+    ----------
+    - school: School name
+    - program: Program name
+    
+    Returns
+    -------
+    - List of tags
+    """
     tags = []
 
     # SPECIAL CASES

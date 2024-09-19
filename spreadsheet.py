@@ -26,10 +26,11 @@ public_spreadsheet = gc.open_by_key(os.getenv('SPREADSHEET_KEY'))
 private_spreadsheet = gc.open_by_key(os.getenv('STAFF_SPREADSHEET_KEY'))
 worksheets = public_spreadsheet.worksheets()
 
-"""
-Returns a list of applicant years (names of the sheets on the spreadsheet)
-"""
+
 def get_applicant_years():
+    """
+    Returns a list of applicant years (names of the sheets on the spreadsheet)
+    """
     applicant_years = [sheet.title for sheet in worksheets]
     applicant_years.remove("Home")
 
@@ -37,10 +38,10 @@ def get_applicant_years():
     return applicant_years
 
 
-"""
-Returns the row number containing a specific message_id
-"""
 def get_sheet_and_row_by_message_id(message_id):
+    """
+    Returns the row number containing a specific message_id
+    """
     sheets = get_applicant_years()
 
     row = None
@@ -57,10 +58,10 @@ def get_sheet_and_row_by_message_id(message_id):
     return sheet, row
 
 
-"""
-Appends a new row to the spreadsheet with the given values
-"""
 async def add_to_spreadsheet(user, school, program, status, average, date, applicant_type, anonymous, other, tags, decision_id):
+    """
+    Appends a new row to the spreadsheet with the given values
+    """
     current_sheet = public_spreadsheet.get_worksheet(1)     # Current year's spreadsheet
     private_current_sheet = private_spreadsheet.get_worksheet(1)
 
@@ -80,18 +81,20 @@ async def add_to_spreadsheet(user, school, program, status, average, date, appli
     private_current_sheet.append_row(new_row_values)
 
 
-"""
-Deletes the given row from the public spreadsheet
-"""
+
 async def delete_row_by_row_num(applicant_year, row):
+    """
+    Deletes the given row from the public spreadsheet
+    """
     current_sheet = public_spreadsheet.worksheet(applicant_year)
 
     current_sheet.delete_rows(int(row))
 
-"""
-Updates the row on the private spreadsheet that contains the given user ID to show that it has been deleted
-"""
+
 async def delete_decision_private(decision_id):
+    """
+    Updates the row on the private spreadsheet that contains the given user ID to show that it has been deleted
+    """
     sheets = get_applicant_years()
     row_number = 1
 
@@ -108,12 +111,22 @@ async def delete_decision_private(decision_id):
             row_number += 1
             
 
-"""
-Generates histogram in "hist.png"
-Returns average, median, sample size, predicted label and classifcation status in form of a dictonary
-Returns None if no data
-"""
-async def stats(school, program, applicant_year, tags):
+async def stats(school, program, applicant_year, tags) -> dict[float, float, int, str, str]:
+    """
+    Generates histogram in "hist.png"
+
+    Parameters
+    ----------
+    - school: School name
+    - program: Program name
+    - applicant_year: Year of applicants
+    - tags: List of tags
+
+    Returns
+    -------
+    - Dictionary containing average, median, sample size, predicted label and classification status
+    - None if no data
+    """
     HISTOGRAM_FILENAME = "hist.png"
 
     if applicant_year == 'ALL':

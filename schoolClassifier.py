@@ -2,10 +2,19 @@ from fuzzywuzzy import fuzz
 
 from data import UNIVERSITIES
 
-"""
-Function that returns a predicted school matching school and the similarity in percentage
-"""
+
 def classify_school(school):
+    """
+    Function that returns a predicted school matching school and the similarity in percentage according to the leivenstein distance.
+
+    Parameters
+    ----------
+    - school: School name
+
+    Returns
+    -------
+    - Tuple containing the predicted school and the similarity in percentage
+    """
     # Pre-Processing
     school = school.lower()
     school = school.replace("university of ", "")

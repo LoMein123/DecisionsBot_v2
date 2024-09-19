@@ -38,9 +38,9 @@ UNIVERSITIES = {
 }
 
 
-#############################################################################
-# List of common university programs, decisions are classified into these
-#############################################################################
+###################################################################################
+# List of common university programs, decisions are classified into these categories
+###################################################################################
 PROGRAMS = {
     "accounting",
     "accounting and financial management",

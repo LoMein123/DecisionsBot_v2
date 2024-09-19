@@ -48,10 +48,18 @@ spellcheck = SpellChecker()
 spellcheck.word_frequency.load_text_file('corpus.txt')
 
 
-"""
-Function that checks and correct spelling
-"""
 def correct_spelling(text):
+    """
+    Function that checks and corrects spelling.
+
+    Parameters
+    ----------
+    - text: The text to correct
+
+    Returns
+    -------
+    - The spell corrected text
+    """
     corrected_text = []
 
     for word in text.split():
